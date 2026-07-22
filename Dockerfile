@@ -1,11 +1,11 @@
 # ---- Etapa 1: dependencias de producción ----
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY app/package*.json ./
 RUN npm ci --omit=dev
 
 # ---- Etapa 2: imagen final mínima ----
-FROM node:22-alpine
+FROM node:26-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 
