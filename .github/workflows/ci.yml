@@ -127,7 +127,7 @@ jobs:
           fi
 
       - name: Upload SARIF a GitHub Security
-        if: always()
+        if: always() && github.actor != 'dependabot[bot]'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: reports/semgrep.sarif
@@ -154,7 +154,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high
 
       - name: Trivy fs (JSON para dashboard)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: app
@@ -167,7 +167,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Trivy fs (gate CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: app
@@ -202,7 +202,7 @@ jobs:
         run: docker build -t $IMAGE_NAME:ci .
 
       - name: Trivy image (JSON para dashboard)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: demo-secure-api:ci
           scanners: vuln
@@ -214,7 +214,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Trivy image (SARIF a GitHub Security)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: demo-secure-api:ci
           scanners: vuln
@@ -226,13 +226,14 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Upload SARIF a GitHub Security
+        if: github.actor != 'dependabot[bot]'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
       - name: Trivy image (gate CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: demo-secure-api:ci
           scanners: vuln
@@ -243,7 +244,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Generar SBOM (CycloneDX)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: demo-secure-api:ci
           format: cyclonedx
