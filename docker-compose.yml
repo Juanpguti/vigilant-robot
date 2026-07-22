@@ -1,0 +1,11 @@
+services:
+  api:
+    build: .
+    image: demo-secure-api:local
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    read_only: true
+    security_opt:
+      - no-new-privileges:true

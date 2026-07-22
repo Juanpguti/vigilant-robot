@@ -1,0 +1,2 @@
+10035	IGNORE	(HSTS no aplica: la app corre en HTTP dentro de la red de CI, sin TLS)
+10063	IGNORE	(Permissions-Policy: aceptado en demo, sin superficie de navegador)

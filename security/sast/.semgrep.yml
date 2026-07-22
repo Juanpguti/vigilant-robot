@@ -1,0 +1,29 @@
+rules:
+  - id: no-eval
+    message: "Uso de eval() detectado: riesgo de ejecución remota de código (RCE)."
+    severity: ERROR
+    languages: [javascript]
+    patterns:
+      - pattern: eval(...)
+
+  - id: no-child-process-exec-dynamic
+    message: "Posible inyección de comandos: exec() con datos dinámicos."
+    severity: ERROR
+    languages: [javascript]
+    patterns:
+      - pattern: require('child_process').exec($CMD, ...)
+      - pattern-not: require('child_process').exec("...", ...)
+
+  - id: no-hardcoded-jwt-secret
+    message: "Secreto JWT hardcodeado en el código: usar variables de entorno."
+    severity: ERROR
+    languages: [javascript]
+    patterns:
+      - pattern: jwt.sign($P, "...", ...)
+
+  - id: express-reflected-user-input
+    message: "Posible XSS reflejado: se envía input del usuario sin sanitizar."
+    severity: WARNING
+    languages: [javascript]
+    patterns:
+      - pattern: $RES.send(`...${$REQ.query.$X}...`)

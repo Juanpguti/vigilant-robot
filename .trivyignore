@@ -1,0 +1,3 @@
+# CVEs aceptados con justificación y fecha de revisión.
+# Formato: un CVE por línea. Documentar SIEMPRE el porqué.
+# CVE-2024-XXXXX  # (ejemplo) FP en dependencia transitiva, revisar 2026-09-01

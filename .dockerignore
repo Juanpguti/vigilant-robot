@@ -1,0 +1,10 @@
+**/node_modules
+**/coverage
+**/*.test.js
+app/tests
+dashboard
+docs
+security
+.github
+.git
+*.md

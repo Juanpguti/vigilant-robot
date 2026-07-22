@@ -1,0 +1,427 @@
+name: DevSecOps CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Permisos mínimos por defecto; cada job eleva solo lo que necesita.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: demo-secure-api
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # 1. Calidad de código: lint + tests con cobertura
+  # ──────────────────────────────────────────────────────────────
+  lint-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install (reproducible)
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Tests + cobertura (gate 80%)
+        run: npm test
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: app/coverage/
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. Secret scanning (Gitleaks)
+  # ──────────────────────────────────────────────────────────────
+  secrets-scan:
+    name: Secrets (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # historial completo: detecta secretos en commits pasados
+
+      - name: Run Gitleaks
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            detect --source /repo \
+            --report-format json \
+            --report-path /repo/reports/gitleaks.json \
+            --exit-code 0
+          # Gate: falla si hay hallazgos
+          COUNT=$(node -e "const r=require('./reports/gitleaks.json'); console.log(Array.isArray(r)?r.length:0)")
+          echo "Secretos detectados: $COUNT"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::Gitleaks detectó $COUNT secreto(s) en el repositorio"
+            exit 1
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: reports/gitleaks.json
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. SAST (Semgrep) → SARIF a GitHub Security + JSON para dashboard
+  # ──────────────────────────────────────────────────────────────
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Scan (OWASP Top 10 + reglas propias)
+        run: |
+          mkdir -p reports
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config security/sast/.semgrep.yml \
+            --exclude node_modules \
+            --json --output reports/semgrep.json \
+            app/ || true
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config security/sast/.semgrep.yml \
+            --exclude node_modules \
+            --sarif --output reports/semgrep.sarif \
+            app/ || true
+          # Gate: falla si hay hallazgos de severidad ERROR
+          ERRORS=$(node -e "const r=require('./reports/semgrep.json'); console.log(r.results.filter(x=>x.extra.severity==='ERROR').length)")
+          echo "Hallazgos SAST severidad ERROR: $ERRORS"
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::Semgrep detectó $ERRORS hallazgo(s) críticos"
+            exit 1
+          fi
+
+      - name: Upload SARIF a GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/semgrep.sarif
+          category: semgrep-sast
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: reports/semgrep.json
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. SCA: dependencias (npm audit + Trivy fs)
+  # ──────────────────────────────────────────────────────────────
+  sca:
+    name: SCA (npm audit + Trivy fs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: npm audit (gate en high)
+        working-directory: app
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Trivy fs (JSON para dashboard)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: app
+          scanners: vuln
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-fs.json
+          exit-code: '0'
+          trivyignores: .trivyignore
+
+      - name: Trivy fs (gate CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: app
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-fs-report
+          path: trivy-fs.json
+
+  # ──────────────────────────────────────────────────────────────
+  # 5. Imagen Docker: build una sola vez + scan + SBOM
+  # ──────────────────────────────────────────────────────────────
+  image:
+    name: Build, Scan & SBOM (imagen)
+    runs-on: ubuntu-latest
+    needs: [lint-test]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build imagen
+        run: docker build -t $IMAGE_NAME:ci .
+
+      - name: Trivy image (JSON para dashboard)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: demo-secure-api:ci
+          scanners: vuln
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          format: json
+          output: trivy-image.json
+          exit-code: '0'
+          trivyignores: .trivyignore
+
+      - name: Trivy image (SARIF a GitHub Security)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: demo-secure-api:ci
+          scanners: vuln
+          severity: MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: '0'
+          trivyignores: .trivyignore
+
+      - name: Upload SARIF a GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Trivy image (gate CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: demo-secure-api:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+      - name: Generar SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: demo-secure-api:ci
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: '0'
+
+      - name: Guardar imagen para el job DAST
+        run: docker save $IMAGE_NAME:ci -o image.tar
+
+      - name: Upload artefactos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-artifacts
+          path: |
+            trivy-image.json
+            sbom.cdx.json
+            image.tar
+
+  # ──────────────────────────────────────────────────────────────
+  # 6. DAST (OWASP ZAP baseline contra la app corriendo)
+  # ──────────────────────────────────────────────────────────────
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: [image]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download imagen construida
+        uses: actions/download-artifact@v4
+        with:
+          name: image-artifacts
+
+      - name: Levantar app en red compartida
+        run: |
+          docker load -i image.tar
+          docker network create zapnet
+          docker run -d --rm --name demoapp --network zapnet \
+            -e NODE_ENV=production $IMAGE_NAME:ci
+          for i in $(seq 1 60); do
+            docker run --rm --network zapnet curlimages/curl:8.10.1 \
+              -sf http://demoapp:3000/health && break
+            sleep 1
+          done
+
+      - name: ZAP baseline scan
+        run: |
+          mkdir -p reports
+          chmod 777 reports
+          set +e
+          docker run --rm --network zapnet \
+            -v "$PWD:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://demoapp:3000 \
+              -c .zap/rules.tsv \
+              -J reports/zap.json \
+              -r reports/zap.html \
+              -w reports/zap.md
+          RC=$?
+          set -e
+          echo "ZAP exit code: $RC"
+          # Gate: 1 = FAIL (rompe pipeline) | 2 = WARN (tolerado, visible en dashboard)
+          if [ "$RC" -eq 1 ]; then
+            echo "::error::ZAP reportó alertas de nivel FAIL"
+            exit 1
+          fi
+
+      - name: Upload reportes ZAP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-reports
+          path: reports/
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f demoapp || true
+          docker network rm zapnet || true
+
+  # ──────────────────────────────────────────────────────────────
+  # 7. Dashboard de seguridad → GitHub Pages (solo main)
+  # ──────────────────────────────────────────────────────────────
+  dashboard:
+    name: Security Dashboard (Pages)
+    runs-on: ubuntu-latest
+    needs: [lint-test, secrets-scan, sast, sca, image, dast]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download todos los reportes
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Recuperar histórico previo (si existe)
+        run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REPO=$(echo "${{ github.repository }}" | cut -d/ -f2)
+          curl -sf "https://${OWNER_LC}.github.io/${REPO}/history.json" -o history.json || echo "[]" > history.json
+
+      - name: Generar dashboard
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPO_NAME: ${{ github.repository }}
+          JOB_RESULTS: >-
+            {"lint-test":"${{ needs.lint-test.result }}",
+             "secrets":"${{ needs.secrets-scan.result }}",
+             "sast":"${{ needs.sast.result }}",
+             "sca":"${{ needs.sca.result }}",
+             "image":"${{ needs.image.result }}",
+             "dast":"${{ needs.dast.result }}"}
+        run: node dashboard/generate.js
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+      - name: Deploy a GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  # ──────────────────────────────────────────────────────────────
+  # 8. Publicación firmada a GHCR (solo main, solo si todo pasó)
+  # ──────────────────────────────────────────────────────────────
+  publish:
+    name: Push firmado a GHCR (Cosign)
+    runs-on: ubuntu-latest
+    needs: [secrets-scan, sast, sca, image, dast]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # firma keyless con OIDC
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download imagen validada
+        uses: actions/download-artifact@v4
+        with:
+          name: image-artifacts
+
+      - name: Login a GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Push + firma keyless
+        run: |
+          docker load -i image.tar
+          REPO_LC=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          docker tag $IMAGE_NAME:ci "$REPO_LC:${{ github.sha }}"
+          docker tag $IMAGE_NAME:ci "$REPO_LC:latest"
+          docker push "$REPO_LC:${{ github.sha }}"
+          docker push "$REPO_LC:latest"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$REPO_LC:latest")
+          cosign sign --yes "$DIGEST"
+          echo "Imagen publicada y firmada: $DIGEST"
