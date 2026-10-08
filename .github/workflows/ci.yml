@@ -27,9 +27,9 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -45,7 +45,7 @@ jobs:
         run: npm test
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: app/coverage/
@@ -57,7 +57,7 @@ jobs:
     name: Secrets (Gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # historial completo: detecta secretos en commits pasados
 
@@ -79,7 +79,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gitleaks-report
           path: reports/gitleaks.json
@@ -94,9 +94,9 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -128,14 +128,14 @@ jobs:
 
       - name: Upload SARIF a GitHub Security
         if: always() && github.actor != 'dependabot[bot]'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: reports/semgrep.sarif
           category: semgrep-sast
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: semgrep-report
           path: reports/semgrep.json
@@ -147,7 +147,7 @@ jobs:
     name: SCA (npm audit + Trivy fs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: npm audit (gate en high)
         working-directory: app
@@ -180,7 +180,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-fs-report
           path: trivy-fs.json
@@ -196,7 +196,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build imagen
         run: docker build -t $IMAGE_NAME:ci .
@@ -227,7 +227,7 @@ jobs:
 
       - name: Upload SARIF a GitHub Security
         if: github.actor != 'dependabot[bot]'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
@@ -256,7 +256,7 @@ jobs:
 
       - name: Upload artefactos
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-artifacts
           path: |
@@ -272,10 +272,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [image]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download imagen construida
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: image-artifacts
 
@@ -316,7 +316,7 @@ jobs:
 
       - name: Upload reportes ZAP
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zap-reports
           path: reports/
@@ -343,14 +343,14 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Download todos los reportes
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -377,13 +377,13 @@ jobs:
         run: node dashboard/generate.js
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site/
 
       - name: Deploy a GitHub Pages
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   # ──────────────────────────────────────────────────────────────
   # 8. Publicación firmada a GHCR (solo main, solo si todo pasó)
@@ -398,15 +398,15 @@ jobs:
       packages: write
       id-token: write # firma keyless con OIDC
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download imagen validada
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: image-artifacts
 
       - name: Login a GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
