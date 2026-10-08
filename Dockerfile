@@ -9,7 +9,14 @@ FROM node:22-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 
-RUN addgroup -S app && adduser -S app -G app
+RUN addgroup -S app && adduser -S app -G app \
+  # La app solo necesita el runtime de Node: se eliminan los gestores de paquetes
+  # que trae la imagen base (npm, npx, corepack, yarn). Reducen superficie de
+  # ataque y arrastran dependencias propias con CVEs (tar, sigstore, picomatch...).
+  && rm -rf /usr/local/lib/node_modules \
+            /usr/local/bin/npm /usr/local/bin/npx \
+            /usr/local/bin/corepack \
+            /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY app/src ./src
